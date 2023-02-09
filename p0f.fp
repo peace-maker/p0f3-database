@@ -92,6 +92,9 @@ sig   = 16436
 ; Linux
 ; -----
 
+label = s:unix:Linux:5.x and newer
+sig   = *:64:0:*:mss*44,7:mss,sok,ts,nop,ws:df,id+:0
+
 label = s:unix:Linux:3.11 and newer
 sig   = *:64:0:*:mss*20,10:mss,sok,ts,nop,ws:df,id+:0
 sig   = *:64:0:*:mss*20,7:mss,sok,ts,nop,ws:df,id+:0
@@ -151,6 +154,7 @@ sig   = 4:64:0:1430:mss*4,6:mss,sok,ts,nop,ws::0
 label = s:unix:Linux:(Android)
 sig   = *:64:0:*:mss*44,1:mss,sok,ts,nop,ws:df,id+:0
 sig   = *:64:0:*:mss*44,3:mss,sok,ts,nop,ws:df,id+:0
+sig   = *:64:0:1250:65535,8:mss,sok,ts,nop,ws:df,id+:0
 
 ; Catch-all rules:
 
@@ -185,6 +189,9 @@ sig   = *:128:0:*:8192,0:mss,nop,nop,sok:df,id+:0
 sig   = *:128:0:*:8192,2:mss,nop,ws,nop,nop,sok:df,id+:0
 sig   = *:128:0:*:8192,8:mss,nop,ws,nop,nop,sok:df,id+:0
 sig   = *:128:0:*:8192,2:mss,nop,ws,sok,ts:df,id+:0
+
+label = s:win:Windows:10
+sig   = *:128:0:*:mss*44,8:mss,nop,ws,nop,nop,sok:df,id+:0
 
 ; Robots with distinctive fingerprints:
 
@@ -357,6 +364,15 @@ sig   = *:64:0:1460:mss*4,2:mss,sok,nop,nop,nop,nop,nop,nop,nop,nop,nop,nop,nop,
 ; client initiating the connection doesn't support them. Use tools/p0f-sendsyn
 ; to get a full set of up to 8 signatures.
 
+label = s:unix:Linux:5.x
+sig   = *:64:0:*:mss*44,0:mss:df:0
+sig   = *:64:0:*:mss*44,0:mss,nop,nop,sok:df:0
+sig   = *:64:0:*:mss*44,7:mss,nop,ws:df:0
+sig   = *:64:0:*:mss*44,7:mss,nop,nop,sok,nop,ws:df:0
+sig   = *:64:0:*:mss*45,0:mss,nop,nop,ts:df:0
+sig   = *:64:0:*:mss*45,0:mss,sok,ts:df:0
+sig   = *:64:0:*:mss*45,7:mss,nop,nop,ts,nop,ws:df:0
+sig   = *:64:0:*:mss*45,7:mss,sok,ts,nop,ws:df:0
 
 label = s:unix:Linux:3.x
 sig   = *:64:0:*:mss*10,0:mss:df:0
