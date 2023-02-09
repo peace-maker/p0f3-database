@@ -92,7 +92,7 @@ sig   = 16436
 ; Linux
 ; -----
 
-label = s:unix:Linux:5.x and newer
+label = s:unix:Linux:4.x and newer
 sig   = *:64:0:*:mss*44,7:mss,sok,ts,nop,ws:df,id+:0
 
 label = s:unix:Linux:3.11 and newer
@@ -190,7 +190,7 @@ sig   = *:128:0:*:8192,2:mss,nop,ws,nop,nop,sok:df,id+:0
 sig   = *:128:0:*:8192,8:mss,nop,ws,nop,nop,sok:df,id+:0
 sig   = *:128:0:*:8192,2:mss,nop,ws,sok,ts:df,id+:0
 
-label = s:win:Windows:10
+label = s:win:Windows:10 or 11
 sig   = *:128:0:*:mss*44,8:mss,nop,ws,nop,nop,sok:df,id+:0
 
 ; Robots with distinctive fingerprints:
