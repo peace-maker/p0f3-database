@@ -11,7 +11,7 @@ import dataclasses
 import sys
 import tempfile
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Set, Tuple, Union
+from typing import AsyncIterator, Any, Dict, List, Set, Tuple, Union
 
 PKAPPA_API_URL = 'http://localhost:8080/api'
 FINGERPRINT_CHUNK_SIZE = 20 # mind the 100 stream page limit
@@ -99,19 +99,13 @@ class Pkappa2Client:
                     raise Pkappa2ClientException(f"update tag failed: {response.status} {error}")
                 return timing_context.end - timing_context.start
 
-async def get_fingerprints(filename: str) -> List[Fingerprint]:
+async def get_fingerprints(filename: str) -> AsyncIterator[Fingerprint]:
     # run p0f to get the fingerprints
-    with tempfile.NamedTemporaryFile('w') as tf:
-        proc = await asyncio.create_subprocess_exec('./p0f', '-r', filename, '-o', tf.name, stdout=asyncio.subprocess.DEVNULL)
-        exit_code = await proc.wait()
-        if exit_code != 0:
-            stderr = await proc.stderr.read() if proc.stderr else b''
-            print(f'p0f failed: {exit_code}: {stderr}')
-            sys.exit(1)
-        
+    with tempfile.NamedTemporaryFile('r') as tf:
+        proc = await asyncio.create_subprocess_exec('./p0f', '-r', filename, '-o', tf.name, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         # read the fingerprints
-        fingerprints = []
-        async with async_open(tf.name, 'r') as f:
+        async with async_open(tf, 'r') as f:
+            # while proc.returncode is None:
             async for line in f:
                 timestamp_and_data = line.split(']', 1)
                 fingerprint = Fingerprint()
@@ -134,8 +128,15 @@ async def get_fingerprints(filename: str) -> List[Fingerprint]:
                     else:
                         pair = param.split('=')
                         fingerprint.extra[pair[0]] = pair[1].strip()
-                fingerprints.append(fingerprint)
-    return fingerprints
+                yield fingerprint
+
+        # wait for p0f to finish
+        exit_code = await proc.wait()
+        if exit_code != 0:
+            stderr = await proc.stderr.read() if proc.stderr else b''
+            print(f'p0f failed (exit={exit_code}): {stderr}')
+            sys.exit(1)
+
 
 @dataclasses.dataclass
 class RequestContext:
@@ -150,22 +151,17 @@ async def on_request_end(session: aiohttp.ClientSession, trace_config_ctx: Simpl
     if trace_config_ctx.trace_request_ctx is not None:
         trace_config_ctx.trace_request_ctx.end = asyncio.get_event_loop().time()
 
+def get_stream_timestamps(stream):
+    def strip_timezone(timestamp):
+        if '.' in timestamp:
+            return timestamp[:timestamp.index('.')]
+        return timestamp
+    first_packet = strip_timezone(stream['FirstPacket'])
+    last_packet = strip_timezone(stream['LastPacket'])
+    return datetime.strptime(first_packet, '%Y-%m-%dT%H:%M:%S'), datetime.strptime(last_packet, '%Y-%m-%dT%H:%M:%S')# + timedelta(seconds=1)
+
 async def main():
-    print(f'Processing fingerprints of packets in {sys.argv[1]}...')
     start = asyncio.get_event_loop().time()
-    all_fingerprints = await get_fingerprints(sys.argv[1])
-    mod_blocklist = ['http request', 'http response', 'host change', 'ip sharing', 'uptime']
-    client_fingerprints = list(filter(lambda f: f.subject == 'cli' and f.mod not in mod_blocklist, all_fingerprints))
-    print(f'Fingerprints: {len(all_fingerprints)}, filtered client fingerprints: {len(client_fingerprints)} (p0f: {asyncio.get_event_loop().time() - start:.02f}s))')
-    
-    def get_stream_timestamps(stream):
-        def strip_timezone(timestamp):
-            if '.' in timestamp:
-                return timestamp[:timestamp.index('.')]
-            return timestamp
-        first_packet = strip_timezone(stream['FirstPacket'])
-        last_packet = strip_timezone(stream['LastPacket'])
-        return datetime.strptime(first_packet, '%Y-%m-%dT%H:%M:%S'), datetime.strptime(last_packet, '%Y-%m-%dT%H:%M:%S')# + timedelta(seconds=1)
 
     # keep track of the time it takes to send the requests
     trace_config = aiohttp.TraceConfig()
@@ -175,14 +171,38 @@ async def main():
     async with aiohttp.ClientSession(trace_configs=[trace_config]) as session:
         client = Pkappa2Client(session, PKAPPA_API_URL)
         await client.init()
-        for chunk_start in range(0, len(client_fingerprints), FINGERPRINT_CHUNK_SIZE * FINGERPRINT_CHUNK_COUNT):
-            chunk_end = min(chunk_start + FINGERPRINT_CHUNK_SIZE * FINGERPRINT_CHUNK_COUNT, len(client_fingerprints))
-            fingerprint_groups = [client_fingerprints[idx:idx + FINGERPRINT_CHUNK_SIZE] for idx in range(chunk_start, chunk_end, FINGERPRINT_CHUNK_SIZE)]
+
+        print(f'Processing fingerprints of packets in {sys.argv[1]}...')
+        all_fingerprints = get_fingerprints(sys.argv[1])
+        mod_blocklist = ['http request', 'http response', 'host change', 'ip sharing', 'uptime']
+
+        fingerprint_count = 0
+        client_fingerprint_count = 0
+
+        while True:
+            p0f_start = asyncio.get_event_loop().time()
+            client_fingerprints: List[Fingerprint] = []
+
+            async for fingerprint in all_fingerprints:
+                fingerprint_count += 1
+                if fingerprint.subject != 'cli' or fingerprint.mod in mod_blocklist:
+                    continue
+                client_fingerprints.append(fingerprint)
+                client_fingerprint_count += 1
+                if len(client_fingerprints) == FINGERPRINT_CHUNK_SIZE * FINGERPRINT_CHUNK_COUNT:
+                    break
+
+            if not client_fingerprints:
+                break
+
+            p0f_end = asyncio.get_event_loop().time()
+            print(f'Processing fingerprints {client_fingerprint_count-len(client_fingerprints)}-{client_fingerprint_count} (p0f {p0f_end-p0f_start:.02f}s)...')
+
+            fingerprint_groups = [client_fingerprints[idx:idx + FINGERPRINT_CHUNK_SIZE] for idx in range(0, len(client_fingerprints), FINGERPRINT_CHUNK_SIZE)]
             streams_groups: List[Union[StreamResult, None]] = await asyncio.gather(*[client.search_streams(fingerprint) for fingerprint in fingerprint_groups if fingerprint])
             try:
-                elapsed = max([stream.elapsed for stream in streams_groups if stream is not None])
-                print(f'Processing fingerprints {chunk_start}-{chunk_end}/{len(client_fingerprints)} (query {elapsed:.02f}s)...')
-                elapsed = 0.0
+                # print(f'Processing fingerprints {client_fingerprint_count}-{chunk_end} (query {elapsed:.02f}s) (p0f {p0f_end-p0f_start:.02f}s)...')
+                marking_elapsed = 0.0
                 added_streams = 0
                 for fingerprints, streams in zip(fingerprint_groups, streams_groups):
                     if streams is None:
@@ -229,17 +249,21 @@ async def main():
                             marks_to_add[mark_name].append(stream_id)
                             added_streams += 1
                     if marks_to_add:
-                        elapsed += max(await asyncio.gather(*[client.add_mark(mark_name, stream_ids) for mark_name, stream_ids in marks_to_add.items()]))
-                print(f'  added {added_streams} streams to generated marks ({elapsed:.02f}s)')
-
+                        marking_elapsed += max(await asyncio.gather(*[client.add_mark(mark_name, stream_ids) for mark_name, stream_ids in marks_to_add.items()]))
+                query_elapsed = max([stream.elapsed for stream in streams_groups if stream is not None])
+                print(f'  added {added_streams} streams to generated marks (searchquery {query_elapsed:.02f}s) (mark {marking_elapsed:.02f}s)')
             except Pkappa2ClientException as ex:
                 print(f'  {ex}')
                 break
-    print(f'Done ({asyncio.get_event_loop().time() - start:.02f}s)')
+    print(f'Fingerprints: {fingerprint_count}, filtered client fingerprints: {client_fingerprint_count} ({asyncio.get_event_loop().time() - start:.02f}s))')
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
         print(f'Usage: {sys.argv[0]} <filename.pcap>')
         sys.exit(1)
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    try:
+        loop.run_until_complete(main())
+    finally:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
