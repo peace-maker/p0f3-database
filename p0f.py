@@ -98,42 +98,58 @@ class Pkappa2Client:
                     raise Pkappa2ClientException(f"update tag failed: {response.status} {error}")
                 return timing_context.end - timing_context.start
 
-async def get_fingerprints(filename: str) -> AsyncIterator[Fingerprint]:
+async def get_fingerprints(p0f_path: str , p0f_database_path: str, filename: str) -> AsyncIterator[Fingerprint]:
     # run p0f to get the fingerprints
     with tempfile.NamedTemporaryFile('r') as tf:
-        proc = await asyncio.create_subprocess_exec('./p0f', '-r', filename, '-o', tf.name, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        proc = await asyncio.create_subprocess_exec(p0f_path, '-f', p0f_database_path, '-r', filename, '-o', tf.name, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         # read the fingerprints
         async with async_open(tf, 'r') as f:
-            # while proc.returncode is None:
-            async for line in f:
-                timestamp_and_data = line.split(']', 1)
-                fingerprint = Fingerprint()
-                fingerprint.timestamp = timestamp_and_data[0][1:]
-                parameters = timestamp_and_data[1][1:].split('|')
-                for param in parameters:
-                    # [2012/01/04 10:26:14] mod=mtu|cli=1.2.3.4/1234|srv=4.3.2.1/80|subj=cli|link=DSL|raw_mtu=1492
-                    if param.startswith('mod='):
-                        fingerprint.mod = param.split('=')[1]
-                    elif param.startswith('cli='):
-                        cli = param.split('=')[1]
-                        fingerprint.client_ip = cli.split('/')[0]
-                        fingerprint.client_port = int(cli.split('/')[1])
-                    elif param.startswith('srv='):
-                        srv = param.split('=')[1]
-                        fingerprint.server_ip = srv.split('/')[0]
-                        fingerprint.server_port = int(srv.split('/')[1])
-                    elif param.startswith('subj='):
-                        fingerprint.subject = param.split('=')[1]
-                    else:
-                        pair = param.split('=')
-                        fingerprint.extra[pair[0]] = pair[1].strip()
-                yield fingerprint
+            full_line = ''
+            while True:
+                # Keep reading while there's still stuff left in the file or the process is still running
+                line = await f.readline()
+                if not line and proc.returncode is not None:
+                    break
+                full_line += line
+                # We're racing p0f and this line is not complete yet
+                if not line.endswith('\n'):
+                    continue
+                line = full_line
+                full_line = ''
+
+                # Parse the p0f log line
+                try:
+                    timestamp_and_data = line.split(']', 1)
+                    fingerprint = Fingerprint()
+                    fingerprint.timestamp = timestamp_and_data[0][1:]
+                    parameters = timestamp_and_data[1][1:].split('|')
+                    for param in parameters:
+                        # [2012/01/04 10:26:14] mod=mtu|cli=1.2.3.4/1234|srv=4.3.2.1/80|subj=cli|link=DSL|raw_mtu=1492
+                        if param.startswith('mod='):
+                            fingerprint.mod = param.split('=')[1]
+                        elif param.startswith('cli='):
+                            cli = param.split('=')[1]
+                            fingerprint.client_ip = cli.split('/')[0]
+                            fingerprint.client_port = int(cli.split('/')[1])
+                        elif param.startswith('srv='):
+                            srv = param.split('=')[1]
+                            fingerprint.server_ip = srv.split('/')[0]
+                            fingerprint.server_port = int(srv.split('/')[1])
+                        elif param.startswith('subj='):
+                            fingerprint.subject = param.split('=')[1]
+                        else:
+                            pair = param.split('=')
+                            fingerprint.extra[pair[0]] = pair[1].strip()
+                    yield fingerprint
+                except IndexError as ex:
+                    print(f"failed to parse line: {line}")
+                    raise ex
 
         # wait for p0f to finish
         exit_code = await proc.wait()
         if exit_code != 0:
             stderr = await proc.stderr.read() if proc.stderr else b''
-            print(f'p0f failed (exit={exit_code}): {stderr}')
+            print(f'p0f failed (exit={exit_code}): {stderr.decode()}')
             exit(1)
 
 
@@ -159,7 +175,7 @@ def get_stream_timestamps(stream):
     last_packet = strip_timezone(stream['LastPacket'])
     return datetime.strptime(first_packet, '%Y-%m-%dT%H:%M:%S'), datetime.strptime(last_packet, '%Y-%m-%dT%H:%M:%S')# + timedelta(seconds=1)
 
-async def main(pcap_path: str, pkappa_api_url: str):
+async def main(args: SimpleNamespace):
     start = asyncio.get_event_loop().time()
 
     # keep track of the time it takes to send the requests
@@ -167,12 +183,16 @@ async def main(pcap_path: str, pkappa_api_url: str):
     trace_config.on_request_start.append(on_request_start)
     trace_config.on_request_end.append(on_request_end)
 
-    async with aiohttp.ClientSession(trace_configs=[trace_config]) as session:
-        client = Pkappa2Client(session, pkappa_api_url)
+    auth = None
+    if args.pkappa_password:
+        auth = aiohttp.BasicAuth(login='admin', password=args.pkappa_password)
+
+    async with aiohttp.ClientSession(trace_configs=[trace_config], auth=auth) as session:
+        client = Pkappa2Client(session, args.pkappa_url)
         await client.init()
 
-        print(f'Processing fingerprints of packets in {pcap_path}...')
-        all_fingerprints = get_fingerprints(pcap_path)
+        print(f'Processing fingerprints of packets in {args.pcap_path}...')
+        all_fingerprints = get_fingerprints(args.p0f_path, args.p0f_database_path, args.pcap_path)
         mod_blocklist = ['http request', 'http response', 'host change', 'ip sharing', 'uptime']
 
         fingerprint_count = 0
@@ -258,14 +278,17 @@ async def main(pcap_path: str, pkappa_api_url: str):
 
 if __name__ == '__main__':
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--pkappa-api-url', default='http://localhost:8080', help='URL of the pkappa2 API', type=str)
+    parser = argparse.ArgumentParser(description='Process p0f fingerprints and add them to pkappa2')
+    parser.add_argument('--pkappa-url', default='http://localhost:8080', help='URL of pkappa2', type=str)
+    parser.add_argument('--pkappa-password', default='', help='Password of pkappa2 basic auth', type=str)
+    parser.add_argument('--p0f-path', default='./p0f', help='Path to the p0f binary', type=str)
+    parser.add_argument('--p0f-database-path', default='./p0f.fp', help='Path to the p0f database', type=str)
     parser.add_argument('pcap_path', help='Path to the pcap file to process', type=str)
     args = parser.parse_args()
 
     loop = asyncio.get_event_loop()
     try:
-        loop.run_until_complete(main(args.pcap_path, args.pkappa_api_url))
+        loop.run_until_complete(main(args))
     finally:
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
