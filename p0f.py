@@ -6,14 +6,13 @@
 from types import SimpleNamespace
 import aiohttp
 from aiofile import async_open
+import argparse
 import asyncio
 import dataclasses
-import sys
 import tempfile
 from datetime import datetime, timedelta
-from typing import AsyncIterator, Any, Dict, List, Set, Tuple, Union
+from typing import AsyncIterator, Any, Dict, List, Set, Union
 
-PKAPPA_API_URL = 'http://localhost:8080/api'
 FINGERPRINT_CHUNK_SIZE = 20 # mind the 100 stream page limit
 FINGERPRINT_CHUNK_COUNT = 30
 
@@ -56,7 +55,7 @@ class Pkappa2Client:
         query = f'protocol:tcp ({" OR ".join(query)})'
 
         timing_context = RequestContext()
-        async with self.session.post(f"{self.base_url}/search.json", params={"page": "0"}, data=query, trace_request_ctx=timing_context) as response:
+        async with self.session.post(f"{self.base_url}/api/search.json", params={"page": "0"}, data=query, trace_request_ctx=timing_context) as response:
             if response.status != 200:
                 error = await response.text()
                 raise Pkappa2ClientException(f"search failed: {response.status} {error}")
@@ -71,7 +70,7 @@ class Pkappa2Client:
             return StreamResult(streams, timing_context.end - timing_context.start)
 
     async def get_tags(self) -> Set[str]:
-        async with self.session.get(f"{self.base_url}/tags") as response:
+        async with self.session.get(f"{self.base_url}/api/tags") as response:
             if response.status != 200:
                 error = await response.text()
                 raise Pkappa2ClientException(f"get tags failed: {response.status} {error}")
@@ -82,7 +81,7 @@ class Pkappa2Client:
         timing_context = RequestContext()
         if mark_name not in self.tags:
             stream_id_str = ','.join([str(stream_id) for stream_id in stream_ids])
-            async with self.session.put(f"{self.base_url}/tags", params={"name": mark_name, "color": "#a366ff"}, data=f"id:{stream_id_str}", trace_request_ctx=timing_context) as response:
+            async with self.session.put(f"{self.base_url}/api/tags", params={"name": mark_name, "color": "#a366ff"}, data=f"id:{stream_id_str}", trace_request_ctx=timing_context) as response:
                 if response.status != 200:
                     error = await response.text()
                     # try again if the tag was created in the meantime
@@ -93,7 +92,7 @@ class Pkappa2Client:
                 self.tags.add(mark_name)
                 return timing_context.end - timing_context.start
         else:
-            async with self.session.patch(f"{self.base_url}/tags", params={"name": mark_name, "method": "mark_add", "stream": list(map(str, stream_ids))}, trace_request_ctx=timing_context) as response:
+            async with self.session.patch(f"{self.base_url}/api/tags", params={"name": mark_name, "method": "mark_add", "stream": list(map(str, stream_ids))}, trace_request_ctx=timing_context) as response:
                 if response.status != 200:
                     error = await response.text()
                     raise Pkappa2ClientException(f"update tag failed: {response.status} {error}")
@@ -135,7 +134,7 @@ async def get_fingerprints(filename: str) -> AsyncIterator[Fingerprint]:
         if exit_code != 0:
             stderr = await proc.stderr.read() if proc.stderr else b''
             print(f'p0f failed (exit={exit_code}): {stderr}')
-            sys.exit(1)
+            exit(1)
 
 
 @dataclasses.dataclass
@@ -160,7 +159,7 @@ def get_stream_timestamps(stream):
     last_packet = strip_timezone(stream['LastPacket'])
     return datetime.strptime(first_packet, '%Y-%m-%dT%H:%M:%S'), datetime.strptime(last_packet, '%Y-%m-%dT%H:%M:%S')# + timedelta(seconds=1)
 
-async def main():
+async def main(pcap_path: str, pkappa_api_url: str):
     start = asyncio.get_event_loop().time()
 
     # keep track of the time it takes to send the requests
@@ -169,11 +168,11 @@ async def main():
     trace_config.on_request_end.append(on_request_end)
 
     async with aiohttp.ClientSession(trace_configs=[trace_config]) as session:
-        client = Pkappa2Client(session, PKAPPA_API_URL)
+        client = Pkappa2Client(session, pkappa_api_url)
         await client.init()
 
-        print(f'Processing fingerprints of packets in {sys.argv[1]}...')
-        all_fingerprints = get_fingerprints(sys.argv[1])
+        print(f'Processing fingerprints of packets in {pcap_path}...')
+        all_fingerprints = get_fingerprints(pcap_path)
         mod_blocklist = ['http request', 'http response', 'host change', 'ip sharing', 'uptime']
 
         fingerprint_count = 0
@@ -258,12 +257,15 @@ async def main():
     print(f'Fingerprints: {fingerprint_count}, filtered client fingerprints: {client_fingerprint_count} ({asyncio.get_event_loop().time() - start:.02f}s))')
 
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        print(f'Usage: {sys.argv[0]} <filename.pcap>')
-        sys.exit(1)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--pkappa-api-url', default='http://localhost:8080', help='URL of the pkappa2 API', type=str)
+    parser.add_argument('pcap_path', help='Path to the pcap file to process', type=str)
+    args = parser.parse_args()
+
     loop = asyncio.get_event_loop()
     try:
-        loop.run_until_complete(main())
+        loop.run_until_complete(main(args.pcap_path, args.pkappa_api_url))
     finally:
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
