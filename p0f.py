@@ -27,6 +27,12 @@ class Fingerprint:
     subject: str = dataclasses.field(default_factory=str)
     extra: Dict[str, str] = dataclasses.field(default_factory=dict)
 
+    def as_query(self) -> str:
+        timestamp_start = datetime.strptime(self.timestamp, '%Y/%m/%d %H:%M:%S')
+        timestamp_end = timestamp_start + timedelta(seconds=1)
+        timestamp = timestamp_start.strftime('%Y-%m-%d %H%M%S') + ":" + timestamp_end.strftime('%Y-%m-%d %H%M%S')
+        return f'time:"{timestamp}" chost:{self.client_ip} cport:{self.client_port} shost:{self.server_ip} sport:{self.server_port}'
+
 @dataclasses.dataclass
 class StreamResult:
     streams: List[Any]
@@ -45,14 +51,7 @@ class Pkappa2Client:
         self.tags = await self.get_tags()
 
     async def search_streams(self, fingerprints: List[Fingerprint]) -> Union[StreamResult, None]:
-        query = []
-        for fingerprint in fingerprints:
-            timestamp_start = datetime.strptime(fingerprint.timestamp, '%Y/%m/%d %H:%M:%S')
-            timestamp_end = timestamp_start + timedelta(seconds=1)
-            timestamp = timestamp_start.strftime('%Y-%m-%d %H%M%S') + ":" + timestamp_end.strftime('%Y-%m-%d %H%M%S')
-            query.append(f'(time:"{timestamp}" chost:{fingerprint.client_ip} cport:{fingerprint.client_port} shost:{fingerprint.server_ip} sport:{fingerprint.server_port})')
-            # query.append(f'(chost:{fingerprint.client_ip} cport:{fingerprint.client_port} shost:{fingerprint.server_ip} sport:{fingerprint.server_port})')
-        query = f'protocol:tcp ({" OR ".join(query)})'
+        query = f'protocol:tcp ({" OR ".join(f"({fingerprint.as_query()})" for fingerprint in fingerprints)})'
 
         timing_context = RequestContext()
         async with self.session.post(f"{self.base_url}/api/search.json", params={"page": "0"}, data=query, trace_request_ctx=timing_context) as response:
@@ -220,7 +219,6 @@ async def main(args: SimpleNamespace):
             fingerprint_groups = [client_fingerprints[idx:idx + FINGERPRINT_CHUNK_SIZE] for idx in range(0, len(client_fingerprints), FINGERPRINT_CHUNK_SIZE)]
             streams_groups: List[Union[StreamResult, None]] = await asyncio.gather(*[client.search_streams(fingerprint) for fingerprint in fingerprint_groups if fingerprint])
             try:
-                # print(f'Processing fingerprints {client_fingerprint_count}-{chunk_end} (query {elapsed:.02f}s) (p0f {p0f_end-p0f_start:.02f}s)...')
                 marking_elapsed = 0.0
                 added_streams = 0
                 for fingerprints, streams in zip(fingerprint_groups, streams_groups):
@@ -248,6 +246,7 @@ async def main(args: SimpleNamespace):
                                 break
                         else:
                             print(fingerprint)
+                            print(fingerprint.as_query())
                             print('  not found')
                             continue
                     
