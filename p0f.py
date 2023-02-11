@@ -20,6 +20,7 @@ FINGERPRINT_CHUNK_COUNT = 30
 
 @dataclasses.dataclass
 class Fingerprint:
+    raw_line: str = dataclasses.field(default_factory=str)
     timestamp: str = dataclasses.field(default_factory=str)
     mod: str = dataclasses.field(default_factory=str)
     client_ip: str = dataclasses.field(default_factory=str)
@@ -102,56 +103,65 @@ class Pkappa2Client:
 async def get_fingerprints(p0f_path: str , p0f_database_path: str, filename: str) -> AsyncIterator[Fingerprint]:
     # run p0f to get the fingerprints
     with tempfile.NamedTemporaryFile('r') as tf:
-        proc = await asyncio.create_subprocess_exec(p0f_path, '-f', p0f_database_path, '-r', filename, '-o', tf.name, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
-        # read the fingerprints
-        async with async_open(tf, 'r') as f:
-            full_line = ''
-            while True:
-                # Keep reading while there's still stuff left in the file or the process is still running
-                line = await f.readline()
-                if not line and proc.returncode is not None:
-                    break
-                full_line += line
-                # We're racing p0f and this line is not complete yet
-                if not line.endswith('\n'):
-                    continue
-                line = full_line
+        try:
+            # p0f doesn't support logging to named pipes, so we have to use a temporary file
+            proc = await asyncio.create_subprocess_exec(p0f_path, '-f', p0f_database_path, '-r', filename, '-o', tf.name, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            # read the fingerprints
+            async with async_open(tf, 'r') as f:
                 full_line = ''
+                while True:
+                    # Keep reading while there's still stuff left in the file or the process is still running
+                    line = await f.readline()
+                    if not line and proc.returncode is not None:
+                        break
+                    full_line += line
+                    # We're racing p0f and this line is not complete yet
+                    if not line.endswith('\n'):
+                        continue
+                    line = full_line
+                    full_line = ''
 
-                # Parse the p0f log line
-                try:
-                    timestamp_and_data = line.split(']', 1)
-                    fingerprint = Fingerprint()
-                    fingerprint.timestamp = timestamp_and_data[0][1:]
-                    parameters = timestamp_and_data[1][1:].split('|')
-                    for param in parameters:
-                        # [2012/01/04 10:26:14] mod=mtu|cli=1.2.3.4/1234|srv=4.3.2.1/80|subj=cli|link=DSL|raw_mtu=1492
-                        if param.startswith('mod='):
-                            fingerprint.mod = param.split('=')[1]
-                        elif param.startswith('cli='):
-                            cli = param.split('=')[1]
-                            fingerprint.client_ip = cli.split('/')[0]
-                            fingerprint.client_port = int(cli.split('/')[1])
-                        elif param.startswith('srv='):
-                            srv = param.split('=')[1]
-                            fingerprint.server_ip = srv.split('/')[0]
-                            fingerprint.server_port = int(srv.split('/')[1])
-                        elif param.startswith('subj='):
-                            fingerprint.subject = param.split('=')[1]
-                        else:
-                            pair = param.split('=')
-                            fingerprint.extra[pair[0]] = pair[1].strip()
-                    yield fingerprint
-                except IndexError as ex:
-                    print(f"failed to parse line: {line}")
-                    raise ex
-
-        # wait for p0f to finish
-        exit_code = await proc.wait()
-        if exit_code != 0:
-            stderr = await proc.stderr.read() if proc.stderr else b''
-            print(f'p0f failed (exit={exit_code}): {stderr.decode()}')
-            exit(1)
+                    # Parse the p0f log line
+                    try:
+                        timestamp_and_data = line.split(']', 1)
+                        fingerprint = Fingerprint(raw_line=line)
+                        fingerprint.timestamp = timestamp_and_data[0][1:]
+                        parameters = timestamp_and_data[1][1:].split('|')
+                        for param in parameters:
+                            # [2012/01/04 10:26:14] mod=mtu|cli=1.2.3.4/1234|srv=4.3.2.1/80|subj=cli|link=DSL|raw_mtu=1492
+                            if param.startswith('mod='):
+                                fingerprint.mod = param.split('=')[1]
+                            elif param.startswith('cli='):
+                                cli = param.split('=')[1]
+                                fingerprint.client_ip = cli.split('/')[0]
+                                fingerprint.client_port = int(cli.split('/')[1])
+                            elif param.startswith('srv='):
+                                srv = param.split('=')[1]
+                                fingerprint.server_ip = srv.split('/')[0]
+                                fingerprint.server_port = int(srv.split('/')[1])
+                            elif param.startswith('subj='):
+                                fingerprint.subject = param.split('=')[1]
+                            else:
+                                pair = param.split('=')
+                                fingerprint.extra[pair[0]] = pair[1].strip()
+                        try:
+                            yield fingerprint
+                        except GeneratorExit:
+                            # the generator was closed, stop reading
+                            break
+                    except IndexError:
+                        print(f"failed to parse line: {line}")
+                        raise
+        finally:
+            # make sure p0f is stopped
+            if proc.returncode is None:
+                proc.terminate()
+            # wait for p0f to finish
+            exit_code = await proc.wait()
+            if exit_code != 0:
+                stderr = await proc.stderr.read() if proc.stderr else b''
+                print(f'p0f failed (exit={exit_code}): {stderr.decode()}')
+                exit(1)
 
 
 @dataclasses.dataclass
