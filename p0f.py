@@ -9,6 +9,8 @@ from aiofile import async_open
 import argparse
 import asyncio
 import dataclasses
+import json
+import os
 import tempfile
 from datetime import datetime, timedelta
 from typing import AsyncIterator, Any, Dict, List, Set, Union
@@ -177,6 +179,17 @@ def get_stream_timestamps(stream):
 async def main(args: SimpleNamespace):
     start = asyncio.get_event_loop().time()
 
+    # check if the pcap was parsed already
+    if os.path.exists('parsed_pcaps.json'):
+        with open('parsed_pcaps.json', 'r') as f:
+            try:
+                parsed_pcaps = json.load(f)
+            except json.decoder.JSONDecodeError:
+                parsed_pcaps = []
+            if args.pcap_path in parsed_pcaps:
+                print(f'{args.pcap_path} already parsed, skipping...')
+                return
+
     # keep track of the time it takes to send the requests
     trace_config = aiohttp.TraceConfig()
     trace_config.on_request_start.append(on_request_start)
@@ -251,8 +264,18 @@ async def main(args: SimpleNamespace):
                             continue
                     
                         if fingerprint.mod == 'syn':
+                            if 'os' not in fingerprint.extra:
+                                print(fingerprint)
+                                print(f'  stream_id={stream_id}')
+                                print('  no os in syn fingerprint')
+                                continue
                             mark_name = f'generated/p0f: os={fingerprint.extra["os"]}'
                         elif fingerprint.mod == 'mtu':
+                            if 'link' not in fingerprint.extra or 'raw_mtu' not in fingerprint.extra:
+                                print(fingerprint)
+                                print(f'  stream_id={stream_id}')
+                                print('  no link or raw_mtu in mtu fingerprint')
+                                continue
                             mark_name = f'generated/p0f: {fingerprint.extra["link"]} mtu={fingerprint.extra["raw_mtu"]}'
                         else:
                             print(fingerprint)
@@ -261,7 +284,6 @@ async def main(args: SimpleNamespace):
                             continue
 
                         if mark_name not in tags:
-                            # print(stream_id, tags)
                             if mark_name not in marks_to_add:
                                 marks_to_add[mark_name] = []
                             marks_to_add[mark_name].append(stream_id)
@@ -270,6 +292,19 @@ async def main(args: SimpleNamespace):
                         marking_elapsed += max(await asyncio.gather(*[client.add_mark(mark_name, stream_ids) for mark_name, stream_ids in marks_to_add.items()]))
                 query_elapsed = max([stream.elapsed for stream in streams_groups if stream is not None])
                 print(f'  added {added_streams} streams to generated marks (searchquery {query_elapsed:.02f}s) (mark {marking_elapsed:.02f}s)')
+
+                # save the parsed pcap so we don't parse it again
+                parsed_pcaps = []
+                if os.path.exists('parsed_pcaps.json'):
+                    with open('parsed_pcaps.json', 'r') as f:
+                        try:
+                            parsed_pcaps = json.load(f)
+                        except json.decoder.JSONDecodeError:
+                            pass
+                parsed_pcaps.append(args.pcap_path)
+                with open('parsed_pcaps.json', 'w') as f:
+                    json.dump(parsed_pcaps, f)
+
             except Pkappa2ClientException as ex:
                 print(f'  {ex}')
                 break
