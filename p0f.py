@@ -527,7 +527,7 @@ if __name__ == "__main__":
         "--listen", help="Listen for incoming requests", action="store_true"
     )
     parser.add_argument(
-        "--pcap_path", help="Path to the pcap file to process", type=str
+        "--pcap-path", help="Path to the pcap file to process", type=str
     )
     args = parser.parse_args()
 
