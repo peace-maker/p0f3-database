@@ -30,11 +30,13 @@ options:
 
 - [Download](https://lcamtuf.coredump.cx/p0f3/releases/p0f-3.09b.tgz) and compile p0f
     - `./setup.sh`
-- Analyze a .pcap `python p0f.py some.pcap`
+- *Manually:* Analyze a single .pcap `./run.sh some.pcap`
     - The .pcap has to be imported into pkappa2 beforehand.
     - Import all pcaps pkappa2 has seen: `for f in /tmp/pkappa2/*.pcap; do ./run.sh $f; done`
-- Start HTTP server to be used as pcap processor webhook in pkappa2 `--pcap_processor_url 'http://localhost:8082/pcaps'`
-  - Use `--listen` to start the server
+- *Automatically:* Start HTTP server and add it to pcap processed webhooks in pkappa2
+  - Use `--listen` to start the server or `./listen.sh --pkappa-url http://localhost:8080 --pkappa-password pkappa2 --port 8082`
+  - Add webhook url to pkappa2
+    - `curl -X PUT -u 'pkappa2:pkappa2' http://localhost:8080/api/webhooks?url=http://localhost:8082/pcaps`
 
 ```
 ./setup.sh
@@ -43,6 +45,6 @@ options:
 # or
 ./run.sh path/to/some.pcap
 
-# start http server on http://localhost:8082/
+# start http server on http://localhost:8082/ with /pcaps endpoint
 ./listen.sh
 ```
