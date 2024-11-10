@@ -36,7 +36,7 @@ options:
 - *Automatically:* Start HTTP server and add it to pcap processed webhooks in pkappa2
   - Use `--listen` to start the server or `./listen.sh --pkappa-url http://localhost:8080 --pkappa-password pkappa2 --port 8082`
   - Add webhook url to pkappa2
-    - `curl -X PUT -u 'pkappa2:pkappa2' http://localhost:8080/api/webhooks?url=http://localhost:8082/pcaps`
+    - `curl -X PUT -u 'pkappa2:pkappa2' 'http://localhost:8080/api/webhooks?url=http://localhost:8082/pcaps'`
 
 ```
 ./setup.sh
