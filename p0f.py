@@ -19,7 +19,7 @@ import dataclasses
 import json
 import os
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator, Any, Dict, List, Set, Union
 
 FINGERPRINT_CHUNK_SIZE = 20  # mind the 100 stream page limit
@@ -39,7 +39,10 @@ class Fingerprint:
     extra: Dict[str, str] = dataclasses.field(default_factory=dict)
 
     def as_query(self) -> str:
-        timestamp_start = datetime.strptime(self.timestamp, "%Y/%m/%d %H:%M:%S")
+        # p0f timestamps are in local time, pkappa2 timestamps are in UTC
+        timestamp_start = datetime.strptime(
+            self.timestamp, "%Y/%m/%d %H:%M:%S"
+        ).astimezone(timezone.utc)
         timestamp_end = timestamp_start + timedelta(seconds=1)
         timestamp = (
             timestamp_start.strftime("%Y-%m-%d %H%M%S")
@@ -344,7 +347,7 @@ class WebHandler:
                                 stream_data = stream["Stream"]
                                 fingerprint_timestamp = datetime.strptime(
                                     fingerprint.timestamp, "%Y/%m/%d %H:%M:%S"
-                                )
+                                ).astimezone(timezone.utc)
                                 first_packet, last_packet = get_stream_timestamps(
                                     stream_data
                                 )
@@ -470,15 +473,19 @@ async def on_request_end(
 
 
 def get_stream_timestamps(stream):
-    def strip_timezone(timestamp):
+    def strip_fractions(timestamp):
         if "." in timestamp:
             return timestamp[: timestamp.index(".")]
         return timestamp
 
-    first_packet = strip_timezone(stream["FirstPacket"])
-    last_packet = strip_timezone(stream["LastPacket"])
-    return datetime.strptime(first_packet, "%Y-%m-%dT%H:%M:%S"), datetime.strptime(
-        last_packet, "%Y-%m-%dT%H:%M:%S"
+    assert stream["FirstPacket"].endswith("Z")
+    assert stream["LastPacket"].endswith("Z")
+    first_packet = strip_fractions(stream["FirstPacket"])
+    last_packet = strip_fractions(stream["LastPacket"])
+    return datetime.strptime(first_packet, "%Y-%m-%dT%H:%M:%S").replace(
+        tzinfo=timezone.utc
+    ), datetime.strptime(last_packet, "%Y-%m-%dT%H:%M:%S").replace(
+        tzinfo=timezone.utc
     )  # + timedelta(seconds=1)
 
 
