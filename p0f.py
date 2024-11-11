@@ -409,13 +409,12 @@ class WebHandler:
                                     ]
                                 )
                             )
-                    query_elapsed = max(
-                        [
-                            stream.elapsed
-                            for stream in streams_groups
-                            if stream is not None
-                        ]
-                    )
+                    streams_elapsed = [
+                        stream.elapsed
+                        for stream in streams_groups
+                        if stream is not None
+                    ]
+                    query_elapsed = max(streams_elapsed) if streams_elapsed else 0.0
                     print(
                         f"  added {added_streams} streams to generated marks (searchquery {query_elapsed:.02f}s) (mark {marking_elapsed:.02f}s)"
                     )
