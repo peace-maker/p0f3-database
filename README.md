@@ -28,6 +28,8 @@ options:
 
 ## Import p0f analysis into [pkappa2](https://github.com/spq/pkappa2)
 
+- Install `libpcap-dev` headers
+  - `apt install libpcap-dev`
 - [Download](https://lcamtuf.coredump.cx/p0f3/releases/p0f-3.09b.tgz) and compile p0f
     - `./setup.sh`
 - *Manually:* Analyze a single .pcap `./run.sh some.pcap`
