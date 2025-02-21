@@ -495,12 +495,12 @@ async def main(args: argparse.Namespace):
         await handler.analyze_pcap(args.pcap_path)
 
     elif args.listen:
-        print(f"Listening on port {args.port}...")
+        print(f"Listening on {args.host}:{args.port}...")
         app = web.Application()
         app.router.add_post("/pcaps", handler.handle_pcaps)
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, "localhost", args.port)
+        site = web.TCPSite(runner, args.host, args.port)
         await site.start()
 
         await handler.process_queue()
@@ -513,6 +513,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Process p0f fingerprints and add them to pkappa2"
     )
+    parser.add_argument("--host", default="localhost", help="Host to listen on", type=str)
     parser.add_argument("--port", default=8082, help="Port to listen on", type=int)
     parser.add_argument(
         "--pkappa-url", default="http://localhost:8080", help="URL of pkappa2", type=str
