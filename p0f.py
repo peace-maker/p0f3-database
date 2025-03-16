@@ -7,7 +7,9 @@ from types import SimpleNamespace
 from aiohttp import (
     web,
     BasicAuth,
+    ClientConnectorError,
     ClientSession,
+    ClientTimeout,
     TraceConfig,
     TraceRequestEndParams,
     TraceRequestStartParams,
@@ -253,7 +255,14 @@ class WebHandler:
         while True:
             filename = await self.filename_queue.get()
             try:
-                await self.analyze_pcap(filename)
+                for i in range(5):
+                    try:
+                        await self.analyze_pcap(filename)
+                        break
+                    except ClientConnectorError as ex:
+                        print(f"(try {i+1}/5) failed to process {filename}: {ex}")
+                else:
+                    print(f"failed to process {filename} after 5 tries. discarding...")
             finally:
                 self.filename_queue.task_done()
 
@@ -273,7 +282,10 @@ class WebHandler:
         if self.pkappa_password:
             auth = BasicAuth(login="admin", password=self.pkappa_password)
 
-        async with ClientSession(trace_configs=[trace_config], auth=auth) as session:
+        session_timeout = ClientTimeout(total=None, connect=5)
+        async with ClientSession(
+            trace_configs=[trace_config], auth=auth, timeout=session_timeout
+        ) as session:
             client = Pkappa2Client(session, self.pkappa_url)
             await client.init()
 
@@ -513,7 +525,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Process p0f fingerprints and add them to pkappa2"
     )
-    parser.add_argument("--host", default="localhost", help="Host to listen on", type=str)
+    parser.add_argument(
+        "--host", default="localhost", help="Host to listen on", type=str
+    )
     parser.add_argument("--port", default=8082, help="Port to listen on", type=int)
     parser.add_argument(
         "--pkappa-url", default="http://localhost:8080", help="URL of pkappa2", type=str
